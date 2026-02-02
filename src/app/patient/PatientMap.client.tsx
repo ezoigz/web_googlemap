@@ -21,6 +21,8 @@ export default function PatientMap() {
     const [caregiverPath, setCaregiverPath] = useState<google.maps.LatLngLiteral[] | null>(null);
     const [patientPath, setPatientPath] = useState<google.maps.LatLngLiteral[] | null>(null);
 
+    // route display mode: single or both (default single: patient -> caregiver)
+    const [routeMode] = useState<'toCaregiver' | 'toPatient' | 'both'>('toCaregiver');
 
     // Names for markers (can come from DB)
     const [patientName, setPatientName] = useState<string>('ผู้มีภาวะพึ่งพิง');
@@ -74,61 +76,53 @@ export default function PatientMap() {
         return () => unsubscribe();
     }, []);
 
-    // 3. คำนวณเส้นทาง (ทั้งสองทาง)
+    // 3. คำนวณเส้นทาง (ตามโหมดการแสดง)
     useEffect(() => {
         if (isLoaded && myPos && caregiverPos && typeof window !== 'undefined' && (window as unknown as Window & { google?: typeof google }).google) {
             try {
-                const g = (window as unknown as Window & { google: typeof google }).google;
-                const service = new g.maps.DirectionsService();
+                const G = (window as unknown as Window & { google: typeof google }).google;
+                const service = new G.maps.DirectionsService();
 
-                // ผู้มีภาวะพึ่งพิง -> ผู้ดูแล
-                service.route(
-                    {
-                        origin: myPos,
-                        destination: caregiverPos,
-                        travelMode: g.maps.TravelMode.DRIVING,
-                    },
-                    (result: google.maps.DirectionsResult | null, status: google.maps.DirectionsStatus) => {
+                const requestRoute = (
+                    origin: google.maps.LatLngLiteral,
+                    destination: google.maps.LatLngLiteral,
+                    setDirections: (r: google.maps.DirectionsResult | null) => void,
+                    setPath: (p: google.maps.LatLngLiteral[] | null) => void,
+                    label?: string
+                ) => {
+                    service.route({ origin, destination, travelMode: G.maps.TravelMode.DRIVING }, (result: google.maps.DirectionsResult | null, status: google.maps.DirectionsStatus) => {
                         if (status === 'OK' && result) {
-                            setDirectionsToCaregiver(result);
-                            const leg = result.routes?.[0]?.legs?.[0] as google.maps.DirectionsLeg | undefined;
-                            if (leg) {
-                                // we no longer store routeInfo in UI panel; keep logic minimal
-                            }
-                            // extract overview path for custom polyline (arrows)
+                            setDirections(result);
                             const overview = result.routes?.[0]?.overview_path?.map((p: google.maps.LatLng) => ({ lat: p.lat(), lng: p.lng() }));
-                            setCaregiverPath(overview ?? null);
+                            setPath(overview ?? null);
+                        } else {
+                            setDirections(null);
+                            setPath(null);
+                            console.warn('No route for', label, status);
                         }
-                    }
-                );
+                    });
+                };
 
-                // ผู้ดูแล -> ผู้มีภาวะพึ่งพิง
-                service.route(
-                    {
-                        origin: caregiverPos,
-                        destination: myPos,
-                        travelMode: g.maps.TravelMode.DRIVING,
-                    },
-                    (result: google.maps.DirectionsResult | null, status: google.maps.DirectionsStatus) => {
-                        if (status === 'OK' && result) {
-                            setDirectionsToPatient(result);
-                            const leg = result.routes?.[0]?.legs?.[0] as google.maps.DirectionsLeg | undefined;
-                            if (leg) {
-                                // no routeInfo stored in panel
-                            }
-                            const overview = result.routes?.[0]?.overview_path?.map((p: google.maps.LatLng) => ({ lat: p.lat(), lng: p.lng() }));
-                            setPatientPath(overview ?? null);
-                        }
-                    }
-                );
+                // calculate only according to selected mode
+                if (routeMode === 'toCaregiver' || routeMode === 'both') {
+                    requestRoute(myPos, caregiverPos, setDirectionsToCaregiver, setCaregiverPath, 'toCaregiver');
+                } else {
+                    // avoid calling setState synchronously inside effect
+                    Promise.resolve().then(() => { setDirectionsToCaregiver(null); setCaregiverPath(null); });
+                }
 
+                if (routeMode === 'toPatient' || routeMode === 'both') {
+                    requestRoute(caregiverPos, myPos, setDirectionsToPatient, setPatientPath, 'toPatient');
+                } else {
+                    // avoid calling setState synchronously inside effect
+                    Promise.resolve().then(() => { setDirectionsToPatient(null); setPatientPath(null); });
+                }
 
             } catch (err) {
                 console.error('DirectionsService error:', err);
-                console.warn('Directions calculation failed');
             }
         }
-    }, [isLoaded, myPos, caregiverPos]);
+    }, [isLoaded, myPos, caregiverPos, routeMode]);
 
 
 
@@ -154,6 +148,9 @@ export default function PatientMap() {
                 center={myPos || defaultCenter}
                 zoom={15}
             >
+                {/* map content: markers and polylines are rendered here */}
+
+
                 {/* 👇👇 หมุดฉัน (Patient) พร้อมชื่อแปะตลอดเวลา 👇👇 */}
                 {myPos && (
                     <Marker
@@ -226,14 +223,24 @@ export default function PatientMap() {
                                 strokeOpacity: 1,
                                 strokeWeight: 8,
                                 clickable: false,
-                                zIndex: 5,
+                                zIndex: 5
+                            }}
+                        />
+
+                        {/* small white circles repeated along the route */}
+                        <Polyline
+                            path={caregiverPath}
+                            options={{
+                                strokeOpacity: 0,
+                                clickable: false,
+                                zIndex: 6,
                                 icons: [
                                     {
                                         icon: {
-                                            path: G.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-                                            scale: 3,
-                                            strokeColor: '#0088FF',
-                                            fillColor: '#0088FF'
+                                            path: G.maps.SymbolPath.CIRCLE,
+                                            scale: 6,
+                                            strokeColor: '#ffffff',
+                                            fillColor: '#ffffff'
                                         },
                                         offset: '0',
                                         repeat: '40px'
@@ -264,14 +271,24 @@ export default function PatientMap() {
                                 strokeOpacity: 1,
                                 strokeWeight: 8,
                                 clickable: false,
-                                zIndex: 5,
+                                zIndex: 5
+                            }}
+                        />
+
+                        {/* small white circles repeated along the route */}
+                        <Polyline
+                            path={patientPath}
+                            options={{
+                                strokeOpacity: 0,
+                                clickable: false,
+                                zIndex: 6,
                                 icons: [
                                     {
                                         icon: {
-                                            path: G.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-                                            scale: 3,
-                                            strokeColor: '#22C55E',
-                                            fillColor: '#22C55E'
+                                            path: G.maps.SymbolPath.CIRCLE,
+                                            scale: 6,
+                                            strokeColor: '#ffffff',
+                                            fillColor: '#ffffff'
                                         },
                                         offset: '0',
                                         repeat: '40px'
@@ -284,6 +301,6 @@ export default function PatientMap() {
             </GoogleMap>
 
 
-        </div>
+        </div >
     );
 }
